@@ -14,7 +14,9 @@ MeshtasticLFProcessor::MeshtasticLFProcessor() {
         downchirp[k] = std::complex<float>(cosf(-phase), sinf(-phase));
     }
     for (size_t p = 0; p < nphase; p++) {
+#ifndef LF_CAND
         downchirp_corr[p] = downchirp;
+#endif
         reset(p);
     }
 }
@@ -28,7 +30,9 @@ void MeshtasticLFProcessor::reset(size_t p) {
     preamble_bin[p] = 0;
     sym_count[p] = 0;
     state[p] = State::Search;
+#ifndef LF_CAND
     for (size_t k = 0; k < fft_n; k++) pre_mag[p][k] = 0.0f;
+#endif
 }
 
 void MeshtasticLFProcessor::reset_all() {
@@ -73,6 +77,7 @@ void MeshtasticLFProcessor::on_lock(size_t p) {
     /* Fractional CFO from the accumulated preamble spectrum: parabolic
      * interpolation of the peak. Correcting it is what makes the beacon decode
      * byte-perfect on the host. */
+#ifndef LF_CAND
     const size_t b = preamble_bin[p];
     const float a0 = pre_mag[p][(b + fft_n - 1) % fft_n];
     const float a1 = pre_mag[p][b];
@@ -85,8 +90,12 @@ void MeshtasticLFProcessor::on_lock(size_t p) {
         downchirp_corr[p][k] =
             downchirp[k] * std::complex<float>(cosf(ph), sinf(ph));
     }
+#endif
 #ifdef LF_BATCH
     if (p == 0) lock_raw = raw_head;
+#endif
+#ifdef LF_CAND
+    if (p == 0) { cand_init(); cand_have_prev = false; }
 #endif
     state[p] = State::Capture;
     sym_count[p] = 0;
@@ -193,8 +202,12 @@ bool MeshtasticLFProcessor::decode(size_t p) {
 }
 
 void MeshtasticLFProcessor::process_symbol(size_t p) {
+#ifdef LF_CAND
+    const std::array<std::complex<float>, fft_n>& dc = downchirp;
+#else
     const std::array<std::complex<float>, fft_n>& dc =
         (state[p] == State::Search) ? downchirp : downchirp_corr[p];
+#endif
     for (size_t k = 0; k < fft_n; k++) dechirped[k] = window[p][k] * dc[k];
     float sharp = 0.0f;
     int8_t frac = 0;
@@ -207,11 +220,15 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
             preamble_run[p]++;
         } else {
             preamble_run[p] = 1;
+#ifndef LF_CAND
             for (size_t k = 0; k < fft_n; k++) pre_mag[p][k] = 0.0f;
+#endif
         }
+#ifndef LF_CAND
         for (size_t k = 0; k < fft_n; k++)
             pre_mag[p][k] += sqrtf(scratch[k].real() * scratch[k].real() +
                                    scratch[k].imag() * scratch[k].imag());
+#endif
         last_bin[p] = bin;
         preamble_bin[p] = bin;
         if (preamble_run[p] >= preamble_min) {
@@ -225,6 +242,50 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
         return;
     }
 
+#ifdef LF_CAND
+    if (p == 0) {
+        if (!cand_have_prev) {
+            for (size_t k = 0; k < fft_n; k++) {
+                ring_re[k] = static_cast<int16_t>(window[0][k].real());
+                ring_im[k] = static_cast<int16_t>(window[0][k].imag());
+            }
+            cand_have_prev = true;
+            return;
+        }
+        const size_t slot = sym_count[0];
+        for (size_t c = 0; c < ncand; c++) {
+            const size_t tf = cand_toff[c];
+            const std::complex<float> w = cand_w[c];
+            std::complex<float> ramp(1.0f, 0.0f);   /* exp(-j2pi cf k/N), recurrence */
+            for (size_t k = 0; k < fft_n; k++) {
+                const std::complex<float> sv = (tf + k < fft_n)
+                    ? std::complex<float>(ring_re[tf + k], ring_im[tf + k])
+                    : window[0][tf + k - fft_n];
+                dechirped[k] = sv * downchirp[k] * ramp;
+                ramp *= w;
+            }
+            fft_swap(dechirped, scratch);
+            fft_c_preswapped(scratch, 0, fft_k);
+            float best = 0.0f; uint32_t bb = 0;
+            for (size_t k = 0; k < fft_n; k++) {
+                const float m = scratch[k].real() * scratch[k].real() +
+                                scratch[k].imag() * scratch[k].imag();
+                if (m > best) { best = m; bb = static_cast<uint32_t>(k); }
+            }
+            if (slot < max_symbols) cand_bins[c][slot] = static_cast<uint16_t>(bb);
+        }
+        for (size_t k = 0; k < fft_n; k++) {
+            ring_re[k] = static_cast<int16_t>(window[0][k].real());
+            ring_im[k] = static_cast<int16_t>(window[0][k].imag());
+        }
+        if (slot < max_symbols) sym_count[0]++;
+        if (sym_count[0] >= cap_after_lock) {
+            const bool hit = cand_decode();
+            if (hit) reset_all(); else reset(0);
+        }
+        return;
+    }
+#endif
     if (sym_count[p] < max_symbols) {
         symbols[p][sym_count[p]] = static_cast<uint16_t>(bin);
         symfrac[p][sym_count[p]] = frac;
@@ -399,6 +460,68 @@ bool MeshtasticLFProcessor::batch_decode() {
         }
     }
     if (best_len >= 12) emit(6, best, best_len);
+    return false;
+}
+#endif
+
+
+#ifdef LF_CAND
+void MeshtasticLFProcessor::cand_init() {
+    /* Seed a small grid: the frame-timing offset tracks the preamble bin
+     * (toff ~= C - pre_bin), so we centre a few toff candidates there and cross
+     * them with a few CFO values. Keeps K tiny enough for the M4's FFT budget. */
+    static const int toff_off[LF_CAND_NTOFF] = LF_CAND_TOFF_OFFS;
+    static const float cfo_val[LF_CAND_NCFO] = LF_CAND_CFO_VALS;
+    const int C = LF_CAND_C;
+    int center = (C - static_cast<int>(preamble_bin[0])) % static_cast<int>(fft_n);
+    if (center < 0) center += fft_n;
+    cand_n = 0;
+    for (size_t ti = 0; ti < LF_CAND_NTOFF; ti++) {
+        int t = (center + toff_off[ti]) % static_cast<int>(fft_n);
+        if (t < 0) t += fft_n;
+        for (size_t ci = 0; ci < LF_CAND_NCFO; ci++) {
+            cand_toff[cand_n] = static_cast<uint16_t>(t);
+            cand_cfo[cand_n] = cfo_val[ci];
+            const float wph = -2.0f * 3.14159265358979f * cfo_val[ci] /
+                              static_cast<float>(fft_n);
+            cand_w[cand_n] = std::complex<float>(cosf(wph), sinf(wph));
+            cand_n++;
+        }
+    }
+}
+
+bool MeshtasticLFProcessor::cand_decode() {
+    static uint8_t out[64];
+    static const int adj[3] = {-1, 0, 1};
+    for (size_t c = 0; c < ncand; c++) {
+        const uint16_t* b = cand_bins[c];
+        /* preamble bin = mode of the first 12 captured symbols */
+        uint16_t pre = b[6]; int bc = 0;
+        for (size_t a = 0; a < 12 && a < sym_count[0]; a++) {
+            int cnt = 0;
+            for (size_t z = 0; z < 12 && z < sym_count[0]; z++)
+                if (b[z] == b[a]) cnt++;
+            if (cnt > bc) { bc = cnt; pre = b[a]; }
+        }
+        for (uint32_t rot = 0; rot <= fft_n / 4; rot += fft_n / 4) {
+            for (size_t hstart = 0; hstart + 8 <= sym_count[0] && hstart < 30; hstart++) {
+                for (int hi = 0; hi < 3; hi++) {
+                    lora::Header hdr;
+                    const size_t plen0 = decode_full(b, sym_count[0], pre, hstart,
+                                                     rot, adj[hi], -1, out, sizeof(out), &hdr);
+                    if (plen0 < 12) continue;
+                    for (int pi = 0; pi < 3; pi++) {
+                        const size_t plen = decode_full(b, sym_count[0], pre, hstart,
+                                                        rot, adj[hi], adj[pi], out, sizeof(out), nullptr);
+                        if (plen >= 12 && lora::crc16_ok(out, plen)) {
+                            emit(2, out, static_cast<uint8_t>(plen));
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
     return false;
 }
 #endif

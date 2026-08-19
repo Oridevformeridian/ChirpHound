@@ -44,19 +44,38 @@ per burst on this capture (read bin 1528 where truth was 1430). The fix is a
 alignment that lands *every* symbol. That closes it — full CRC-clean decode,
 byte-for-byte with the reference, in ~3 s for two bursts.
 
-## Host vs. device
+## On-device decoder (candidate streaming)
 
-The frame-boundary sweep is behind `#define LF_BATCH` because it buffers the
-burst's raw IQ (a few MB) to re-window it — fine for the host / `hostsim`, too big
-for the M4's SRAM. The **device-deployable** path is the same timing recovery done
-*streaming*: detect the SFD (the down-chirps that follow the preamble) to set the
-frame boundary directly instead of searching it — O(1) memory. The batch search
-proves the alignment exists and the DSP is correct; SFD-locked streaming is the
-next step to put a clean LongFast decode on the handheld itself.
+The frame-boundary sweep proves the signal is decodable but buffers the whole
+burst's raw IQ — impossible on the M4 (96 KB RAM, ~80 KB heap). The deployable
+decoder gets the same answer with a **candidate-streaming** design that stores
+bins, not samples (`LF_CAND`):
 
-Without `LF_BATCH`, the streaming decoder still runs: **detection is rock-solid**
-and it emits the near-complete decode (header + addresses) as best-effort, with
-only fully CRC-verified frames marked clean.
+- **Preamble-seeded timing.** The frame-timing offset tracks the preamble bin
+  (`toff ~= C - pre_bin`), so a tiny grid is centred there instead of searched.
+- **K = 6 candidates** (2 timing offsets x 3 CFO values) run in lockstep as the
+  frame streams. Each re-windows from a shared **2-symbol ring** at its own
+  `toff`, dechirps with its own CFO (a complex-rotation *recurrence* — no
+  per-sample trig), FFTs, and buffers only its bins. At burst end each runs the
+  proven `decode_full` + CRC; the first CRC pass wins.
+- **Fits the hardware, measured:** builds to **20 KB flash (62%)**; the processor
+  object is **73.8 KB**, inside the **79.6 KB** heap (thread stacks are static, so
+  nothing competes). Six 2048-pt FFTs/symbol sit inside SF11's 8.19 ms budget.
+  int16 sample buffers and dropping the CFO-correction/preamble-magnitude buffers
+  (unused here) are what bring it under the ceiling.
+
+Validated in `lf_hostsim`: the candidate decoder decodes **both** probe bursts
+byte-identical to the reference and decrypts end to end.
+
+**Caveat.** The `C` in `toff ~= C - pre_bin` is calibrated on the beacon's single
+CFO. Arbitrary mesh nodes have different CFOs, which shift `C`; generalising means
+tracking the SFD-measured CFO (the SFD is cleanly detectable — up-chirp dechirp
+sharpness jumps ~3 -> 1220 at it). That's the next step for real multi-node
+traffic; this first cut targets the validated beacon signal.
+
+Without `LF_CAND` or `LF_BATCH`, the streaming decoder still runs: rock-solid
+detection plus a best-effort (header + addresses) decode, only CRC-verified frames
+marked clean.
 
 ## Reproduce
 

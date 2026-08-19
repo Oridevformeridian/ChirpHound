@@ -62,6 +62,14 @@ index 38f499d4..2e2a832d 100644
 +)
 +DeclareTargets(PMSH meshtastic)
 +
++### MESHTASTIC LONGFAST RX
++
++set(MODE_CPPSRC
++	proc_meshtastic_lf.cpp
++	lora_decode.cpp
++)
++DeclareTargets(PMLF meshtasticlf)
++
  
  ### AFSK RX
  

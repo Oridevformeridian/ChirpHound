@@ -28,6 +28,22 @@
  * CRC-16 -- an on-device, keyless correctness gate. Host (hostsim) uses 4;
  * the device build can trim LF_NPHASE to fit SRAM. Validated end to end on the
  * host (longfast_decode.py): the beacon decodes byte-perfect and decrypts. */
+#ifndef LF_CAND_C
+#define LF_CAND_C 1038
+#endif
+#ifndef LF_CAND_NTOFF
+#define LF_CAND_NTOFF 2
+#endif
+#ifndef LF_CAND_TOFF_OFFS
+#define LF_CAND_TOFF_OFFS {-32, 32}
+#endif
+#ifndef LF_CAND_NCFO
+#define LF_CAND_NCFO 3
+#endif
+#ifndef LF_CAND_CFO_VALS
+#define LF_CAND_CFO_VALS {-0.70f, -0.55f, -0.40f}
+#endif
+
 #ifndef LF_NPHASE
 #define LF_NPHASE 4
 #endif
@@ -46,10 +62,10 @@ class MeshtasticLFProcessor : public BasebandProcessor {
     static constexpr size_t symbol_max = 1 << sf;
     static constexpr size_t nphase = LF_NPHASE;
 
-    static constexpr size_t preamble_min = 14;
+    static constexpr size_t preamble_min = 8;
     static constexpr uint32_t bin_tolerance = 2;
     static constexpr size_t max_symbols = 96;           /* header+payload */
-    static constexpr size_t cap_after_lock = 60;        /* symbols to buffer */
+    static constexpr size_t cap_after_lock = 72;        /* symbols to buffer */
 
     void feed(size_t p);
     void process_symbol(size_t p);
@@ -69,8 +85,10 @@ class MeshtasticLFProcessor : public BasebandProcessor {
 
     /* per decimation phase */
     std::array<std::complex<float>, fft_n> window[nphase]{};
+#ifndef LF_CAND
     std::array<std::complex<float>, fft_n> downchirp_corr[nphase]{};
     std::array<float, fft_n> pre_mag[nphase]{};
+#endif
     uint16_t symbols[nphase][max_symbols]{};   /* peak bin */
     int8_t   symfrac[nphase][max_symbols]{};   /* parabolic sub-bin offset */
 
@@ -89,6 +107,24 @@ class MeshtasticLFProcessor : public BasebandProcessor {
      * payload symbols to their runner-up and lets the LoRa CRC-16 confirm the
      * fix -- keyless on-device error correction. */
 
+#ifdef LF_CAND
+    /* Candidate-streaming decode: run a grid of (toff, cfo) decoders in lockstep
+     * as the frame streams, each re-windowing from a shared 2-symbol ring and
+     * buffering only its bins; CRC picks the winner. Fits the M4 heap because it
+     * stores bins, not samples. */
+    static constexpr size_t ncand = LF_CAND_NTOFF * LF_CAND_NCFO;
+    std::complex<float> cprev{};            /* unused placeholder */
+    int16_t ring_re[fft_n]{};   /* previous symbol samples, int16 to fit SRAM */
+    int16_t ring_im[fft_n]{};
+    bool cand_have_prev{false};
+    uint16_t cand_bins[ncand][max_symbols]{};
+    float cand_cfo[ncand]{};
+    uint16_t cand_toff[ncand]{};
+    std::complex<float> cand_w[ncand]{};   /* per-symbol CFO rotation step */
+    size_t cand_n{0};
+    void cand_init();
+    bool cand_decode();
+#endif
     uint64_t sample_index{0};
 
 #ifdef LF_BATCH
