@@ -7,7 +7,11 @@ and shows a static detector panel (preambles / headers / decodes / addresses).
 
 ![ChirpHound detector screen](docs/detector.png)
 
-*The detector panel on a PortaPack: preamble/header/decode/address counts update in place. Left: an earlier build decoding a live beacon (`!4358AB2C > bcast`).*
+*The static detector panel, captured in the field — preamble / header / decode / address counts update in place (210 preambles, 27 decodes here).*
+
+![Live beacon decode](docs/decode.png)
+
+*A live decode off the air: `!4358AB2C > bcast chEB 34B` — the beacon node, decrypted on the bench with the channel key.*
 
 Two halves:
 - **Firmware** — `meshtastic_rx` external app + M4 baseband (in the `meshtastic-rx`
