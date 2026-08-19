@@ -1,0 +1,6 @@
+tools/hostsim/build/
+tools/hostsim/hostsim
+__pycache__/
+*.ppma
+*.bin
+*.npz

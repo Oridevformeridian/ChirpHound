@@ -1,0 +1,80 @@
+name: release
+
+# Builds the ChirpHound .ppma against a pinned PortaPack Mayhem firmware and
+# publishes it as a GitHub Release asset. External apps carry an app_version =
+# md5(VERSION_STRING); the device loader rejects a mismatch, so the pin below
+# MUST match the firmware release you run on the device.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  # Pinned Mayhem firmware source + version string. The .ppma only loads on a
+  # device running this firmware version. Bump both together to track a release.
+  MAYHEM_REF: 5c719645d6007bb3b0083ddff4863050d55fb8b5
+  VERSION_STRING: v2.4.0
+  APP_VERSION: '0xa6685c6b'   # md5("v2.4.0") low 32 bits, LE at ppma offset 12
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ChirpHound
+        uses: actions/checkout@v4
+        with:
+          path: chirphound
+
+      - name: Clone mayhem-firmware @ pinned ref
+        run: |
+          git clone https://github.com/portapack-mayhem/mayhem-firmware.git mayhem
+          cd mayhem
+          git checkout "$MAYHEM_REF"
+          git submodule update --init --recursive
+
+      - name: Overlay ChirpHound sources
+        run: chirphound/scripts/wire.sh "$PWD/mayhem"
+
+      - name: Build the Mayhem docker image
+        run: cd mayhem && docker build -t portapack-dev -f dockerfile-nogit .
+
+      - name: Build firmware (produces the .ppma)
+        run: |
+          mkdir -p mayhem/build
+          docker run -e VERSION_STRING="$VERSION_STRING" -i \
+            -v "$PWD/mayhem:/havoc" portapack-dev make firmware -j"$(nproc)"
+
+      - name: Extract and verify the .ppma
+        run: |
+          cp mayhem/build/firmware/application/meshtastic_rx.ppma .
+          python3 - "$APP_VERSION" <<'PY'
+          import struct, sys
+          want = int(sys.argv[1], 16)
+          d = open("meshtastic_rx.ppma", "rb").read()
+          got = struct.unpack_from("<I", d, 12)[0]
+          # full baseband embedded?
+          b = open("mayhem/build/firmware/baseband/PMSH.bin", "rb").read()
+          assert b in d, "baseband image not embedded in .ppma"
+          assert got == want, f"app_version {got:#010x} != {want:#010x}"
+          print(f"OK: {len(d)} B, app_version {got:#010x}, baseband embedded")
+          PY
+
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: meshtastic_rx.ppma
+          body: |
+            **ChirpHound** — Meshtastic (SF7/BW500 SHORT_TURBO) receiver + detector for PortaPack Mayhem.
+
+            Built against Mayhem firmware **${{ env.VERSION_STRING }}** (`app_version ${{ env.APP_VERSION }}`).
+            Copy `meshtastic_rx.ppma` to `/APPS` on the SD card. It only loads on a device
+            running Mayhem ${{ env.VERSION_STRING }}; on another version, rebuild with a matching pin.
+
+      - name: Upload build artifact (non-tag runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: meshtastic_rx-ppma
+          path: meshtastic_rx.ppma

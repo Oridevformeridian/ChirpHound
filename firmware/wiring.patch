@@ -1,0 +1,79 @@
+diff --git a/firmware/application/external/external.cmake b/firmware/application/external/external.cmake
+index dfa89efc..349297c0 100644
+--- a/firmware/application/external/external.cmake
++++ b/firmware/application/external/external.cmake
+@@ -124,6 +124,10 @@ set(EXTCPPSRC
+ 	external/acars_rx/main.cpp
+ 	external/acars_rx/acars_app.cpp
+ 
++	#meshtastic
++	external/meshtastic_rx/main.cpp
++	external/meshtastic_rx/meshtastic_app.cpp
++
+ 	#wefax_rx 192 bytes
+ 	external/wefax_rx/main.cpp
+ 	external/wefax_rx/ui_wefax_rx.cpp
+@@ -372,6 +376,7 @@ set(EXTAPPLIST
+ 	sstvrx
+ 	random_password
+ 	acars_rx
++	meshtastic_rx
+ 	wefax_rx
+ 	noaaapt_rx
+ 	shoppingcart_lock
+diff --git a/firmware/application/external/external.ld b/firmware/application/external/external.ld
+index cd61633c..92af1538 100644
+--- a/firmware/application/external/external.ld
++++ b/firmware/application/external/external.ld
+@@ -106,6 +106,7 @@ MEMORY
+     ram_external_app_epirb_tx              (rwx) : org = 0xAE010000, len = 32k
+     ram_external_app_fpv_detect            (rwx) : org = 0xAE020000, len = 32k
+     ram_external_app_p25_tx                (rwx) : org = 0xAE030000, len = 32k
++    ram_external_app_meshtastic_rx         (rwx) : org = 0xAE040000, len = 32k
+ }
+ 
+ SECTIONS
+@@ -266,6 +267,12 @@ SECTIONS
+         *(*ui*external_app*acars_rx*);
+     } > ram_external_app_acars_rx
+ 
++    .external_app_meshtastic_rx : ALIGN(4) SUBALIGN(4)
++    {
++        KEEP(*(.external_app.app_meshtastic_rx.application_information));
++        *(*ui*external_app*meshtastic_rx*);
++    } > ram_external_app_meshtastic_rx
++
+     .external_app_shoppingcart_lock : ALIGN(4) SUBALIGN(4)
+     {
+         KEEP(*(.external_app.app_shoppingcart_lock.application_information));
+diff --git a/firmware/baseband/CMakeLists.txt b/firmware/baseband/CMakeLists.txt
+index 38f499d4..2e2a832d 100644
+--- a/firmware/baseband/CMakeLists.txt
++++ b/firmware/baseband/CMakeLists.txt
+@@ -520,6 +520,14 @@ set(MODE_CPPSRC
+ )
+ DeclareTargets(PACA acars)
+ 
++### MESHTASTIC RX
++
++set(MODE_CPPSRC
++	proc_meshtastic.cpp
++	lora_decode.cpp
++)
++DeclareTargets(PMSH meshtastic)
++
+ 
+ ### AFSK RX
+ 
+diff --git a/firmware/common/spi_image.hpp b/firmware/common/spi_image.hpp
+index 6c9fde35..7eae2365 100644
+--- a/firmware/common/spi_image.hpp
++++ b/firmware/common/spi_image.hpp
+@@ -76,6 +76,7 @@ struct image_tag_t {
+ constexpr image_tag_t image_tag_none{0, 0, 0, 0};
+ constexpr image_tag_t image_tag_audio_beep{'P', 'A', 'B', 'P'};
+ constexpr image_tag_t image_tag_acars{'P', 'A', 'C', 'A'};
++constexpr image_tag_t image_tag_meshtastic{'P', 'M', 'S', 'H'};
+ constexpr image_tag_t image_tag_adsb_rx{'P', 'A', 'D', 'R'};
+ constexpr image_tag_t image_tag_afsk_rx{'P', 'A', 'F', 'R'};
+ constexpr image_tag_t image_tag_aprs_rx{'P', 'A', 'P', 'R'};
