@@ -31,14 +31,23 @@
 #ifndef LF_CAND_C
 #define LF_CAND_C 1038
 #endif
+#ifndef LF_CAND_CONST
+#define LF_CAND_CONST 1050
+#endif
+#ifndef LF_CAND_SFD_SCAN
+#define LF_CAND_SFD_SCAN 11
+#endif
 #ifndef LF_CAND_NTOFF
 #define LF_CAND_NTOFF 2
 #endif
 #ifndef LF_CAND_TOFF_OFFS
-#define LF_CAND_TOFF_OFFS {-32, 32}
+#define LF_CAND_TOFF_OFFS {-20, 20}
 #endif
 #ifndef LF_CAND_NCFO
 #define LF_CAND_NCFO 3
+#endif
+#ifndef LF_CAND_CFO_OFFS
+#define LF_CAND_CFO_OFFS {-15, 0, 15}
 #endif
 #ifndef LF_CAND_CFO_VALS
 #define LF_CAND_CFO_VALS {-0.70f, -0.55f, -0.40f}
@@ -96,7 +105,7 @@ class MeshtasticLFProcessor : public BasebandProcessor {
     std::complex<float> decim_acc[nphase]{};
     size_t decim_cnt[nphase]{};
 
-    enum class State { Search, Capture } state[nphase]{};
+    enum class State { Search, FindSFD, Capture } state[nphase]{};
     uint32_t last_bin[nphase]{};
     size_t preamble_run[nphase]{};
     uint32_t preamble_bin[nphase]{};
@@ -121,8 +130,10 @@ class MeshtasticLFProcessor : public BasebandProcessor {
     float cand_cfo[ncand]{};
     uint16_t cand_toff[ncand]{};
     std::complex<float> cand_w[ncand]{};   /* per-symbol CFO rotation step */
+    uint16_t cand_pre[ncand]{};            /* preamble reference per candidate */
+    uint32_t sfd_bin{0}; float sfd_best{0.0f}; size_t sfd_scan{0};
     size_t cand_n{0};
-    void cand_init();
+    void cand_init(int toff_center, float cfo_center);
     bool cand_decode();
 #endif
     uint64_t sample_index{0};

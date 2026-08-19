@@ -95,7 +95,8 @@ void MeshtasticLFProcessor::on_lock(size_t p) {
     if (p == 0) lock_raw = raw_head;
 #endif
 #ifdef LF_CAND
-    if (p == 0) { cand_init(); cand_have_prev = false; }
+    if (p == 0) { sfd_scan = 0; sfd_best = 0.0f; sfd_bin = 0;
+                  state[0] = State::FindSFD; sym_count[0] = 0; return; }
 #endif
     state[p] = State::Capture;
     sym_count[p] = 0;
@@ -243,6 +244,36 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
     }
 
 #ifdef LF_CAND
+    if (p == 0 && state[0] == State::FindSFD) {
+        /* SFD (down-chirps) peak under the up-chirp reference = conj(downchirp).
+         * pre_bin (down) and sfd_bin (up) give STO = (pre - sfd)/2, which is
+         * CFO-invariant, so toff = const - STO tracks any transmitter's CFO. */
+        for (size_t k = 0; k < fft_n; k++)
+            dechirped[k] = window[0][k] * std::conj(downchirp[k]);
+        fft_swap(dechirped, scratch); fft_c_preswapped(scratch, 0, fft_k);
+        float ub = 0.0f, ut = 0.0f; uint32_t ubin = 0;
+        for (size_t k = 0; k < fft_n; k++) {
+            const float m = scratch[k].real() * scratch[k].real() + scratch[k].imag() * scratch[k].imag();
+            ut += m; if (m > ub) { ub = m; ubin = static_cast<uint32_t>(k); }
+        }
+        const float us = (ut > 0.0f) ? ub / (ut / fft_n) : 0.0f;
+        if (us > sfd_best) {
+            sfd_best = us; sfd_bin = ubin;
+        }
+        if (++sfd_scan >= LF_CAND_SFD_SCAN) {
+            const int N = static_cast<int>(fft_n);
+            int pre = static_cast<int>(preamble_bin[0]);
+            int sfd = static_cast<int>(sfd_bin); if (sfd > N/2) sfd -= N;
+            int sto = ((pre - sfd) / 2) % N; if (sto < 0) sto += N;
+            int cst = LF_CAND_CONST; const char* e = getenv("LF_CONST"); if (e) cst = atoi(e);
+            int center = (cst - sto) % N; if (center < 0) center += N;
+            const char* co = getenv("LF_CFOC"); float cfo_center = co ? atof(co) : -0.55f;
+            cand_init(center, cfo_center);
+            cand_have_prev = false;
+            state[0] = State::Capture; sym_count[0] = 0;
+        }
+        return;
+    }
     if (p == 0) {
         if (!cand_have_prev) {
             for (size_t k = 0; k < fft_n; k++) {
@@ -466,24 +497,22 @@ bool MeshtasticLFProcessor::batch_decode() {
 
 
 #ifdef LF_CAND
-void MeshtasticLFProcessor::cand_init() {
-    /* Seed a small grid: the frame-timing offset tracks the preamble bin
-     * (toff ~= C - pre_bin), so we centre a few toff candidates there and cross
-     * them with a few CFO values. Keeps K tiny enough for the M4's FFT budget. */
+void MeshtasticLFProcessor::cand_init(int toff_center, float cfo_center) {
     static const int toff_off[LF_CAND_NTOFF] = LF_CAND_TOFF_OFFS;
-    static const float cfo_val[LF_CAND_NCFO] = LF_CAND_CFO_VALS;
-    const int C = LF_CAND_C;
-    int center = (C - static_cast<int>(preamble_bin[0])) % static_cast<int>(fft_n);
-    if (center < 0) center += fft_n;
+    static const int cfo_off_i[LF_CAND_NCFO] = LF_CAND_CFO_OFFS;   /* x0.01 */
+    int psgn = 1; const char* ps = getenv("LF_PRE_SGN"); if (ps) psgn = atoi(ps);
     cand_n = 0;
     for (size_t ti = 0; ti < LF_CAND_NTOFF; ti++) {
-        int t = (center + toff_off[ti]) % static_cast<int>(fft_n);
+        int t = (toff_center + toff_off[ti]) % static_cast<int>(fft_n);
         if (t < 0) t += fft_n;
+        int pc = (static_cast<int>(preamble_bin[0]) + psgn * t) % static_cast<int>(fft_n);
+        if (pc < 0) pc += fft_n;
         for (size_t ci = 0; ci < LF_CAND_NCFO; ci++) {
+            const float cf = cfo_center + 0.01f * static_cast<float>(cfo_off_i[ci]);
             cand_toff[cand_n] = static_cast<uint16_t>(t);
-            cand_cfo[cand_n] = cfo_val[ci];
-            const float wph = -2.0f * 3.14159265358979f * cfo_val[ci] /
-                              static_cast<float>(fft_n);
+            cand_pre[cand_n] = static_cast<uint16_t>(pc);
+            cand_cfo[cand_n] = cf;
+            const float wph = -2.0f * 3.14159265358979f * cf / static_cast<float>(fft_n);
             cand_w[cand_n] = std::complex<float>(cosf(wph), sinf(wph));
             cand_n++;
         }
@@ -495,14 +524,7 @@ bool MeshtasticLFProcessor::cand_decode() {
     static const int adj[3] = {-1, 0, 1};
     for (size_t c = 0; c < ncand; c++) {
         const uint16_t* b = cand_bins[c];
-        /* preamble bin = mode of the first 12 captured symbols */
-        uint16_t pre = b[6]; int bc = 0;
-        for (size_t a = 0; a < 12 && a < sym_count[0]; a++) {
-            int cnt = 0;
-            for (size_t z = 0; z < 12 && z < sym_count[0]; z++)
-                if (b[z] == b[a]) cnt++;
-            if (cnt > bc) { bc = cnt; pre = b[a]; }
-        }
+        const uint16_t pre = cand_pre[c];
         for (uint32_t rot = 0; rot <= fft_n / 4; rot += fft_n / 4) {
             for (size_t hstart = 0; hstart + 8 <= sym_count[0] && hstart < 30; hstart++) {
                 for (int hi = 0; hi < 3; hi++) {

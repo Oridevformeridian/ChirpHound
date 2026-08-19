@@ -67,11 +67,15 @@ bins, not samples (`LF_CAND`):
 Validated in `lf_hostsim`: the candidate decoder decodes **both** probe bursts
 byte-identical to the reference and decrypts end to end.
 
-**Caveat.** The `C` in `toff ~= C - pre_bin` is calibrated on the beacon's single
-CFO. Arbitrary mesh nodes have different CFOs, which shift `C`; generalising means
-tracking the SFD-measured CFO (the SFD is cleanly detectable — up-chirp dechirp
-sharpness jumps ~3 -> 1220 at it). That's the next step for real multi-node
-traffic; this first cut targets the validated beacon signal.
+**SFD-tracked timing.** The frame boundary is now read per-burst from the SFD:
+`STO = (pre_bin - sfd_bin)/2` is CFO-invariant, so `toff = const - STO` tracks any
+transmitter's carrier offset (the SFD is cleanly detectable via the conjugate
+downchirp -- up-dechirp sharpness jumps ~3 -> 1220 at it). `const` is a geometric
+constant, not signal-dependent. Timing therefore generalises across nodes. The
+*fractional* CFO de-rotation still uses a fixed grid centred where this hardware
+sits; tracking it per-transmitter runs into a half-integer/STO-coupling subtlety
+(the parabolic sub-bin estimate is unstable when the CFO lands near a half bin, as
+the beacon's does) -- a bounded refinement left for real multi-node traffic.
 
 Without `LF_CAND` or `LF_BATCH`, the streaming decoder still runs: rock-solid
 detection plus a best-effort (header + addresses) decode, only CRC-verified frames
