@@ -81,11 +81,11 @@ wedge the CDC — do not use `fwb`).
 
 SHORT_TURBO is where ChirpHound started; **LongFast** (SF11/BW250) is where it
 matters — Meshtastic's DEFAULT, the preset real public traffic runs on. SF11's
-~12 dB extra processing gain is exactly what the PortaPack front end needs, and
-LongFast preambles lock rock-solid. The SF11 receiver
-(`firmware/baseband/proc_meshtastic_lf.*`, plus a 3-row `dsp_fft` twiddle-table
-extension for the 2048-point FFT) reproduces the validated host decoder
-byte-for-byte on all but ~1 marginal symbol per burst — a great detector and a
-best-effort decoder, far closer to clean than SF7. Full write-up:
+~12 dB extra processing gain is exactly what the PortaPack front end needs:
+preambles lock rock-solid, and the frame **decodes clean and decrypts end to
+end** (`!4358ab2c -> BEACON 00004`, on the DEFAULT channel), byte-identical to
+the host reference. It took a 3-row `dsp_fft` twiddle-table extension for the
+2048-point FFT, an sx127x CRC-16 gate, and a frame-boundary (symbol-timing)
+sweep to land the last marginal symbol. Full write-up:
 [docs/LONGFAST.md](docs/LONGFAST.md). Host reference decoder:
 [host/longfast_decode.py](host/longfast_decode.py).

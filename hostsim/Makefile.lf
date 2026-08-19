@@ -1,0 +1,51 @@
+# Host build of the PortaPack LoRa DSP.
+#
+# The real sources are compiled -- not forks of them. They are *staged* into
+# build/stage first, copied fresh on every build, because `#include "x.hpp"`
+# searches the including file's own directory before any -I path: compiled in
+# place, proc_meshtastic_lf.hpp would pull the firmware's ChibiOS-backed
+# baseband_processor.hpp instead of the host shim. Staging puts the shims in
+# that directory. Edit the firmware source and this picks it up on the next
+# make; there is no second copy to drift.
+#
+# proc_meshtastic_lf.cpp carries the baseband image's own main(); it is renamed at
+# compile time so the harness can supply its own entry point.
+
+FW      ?= $(HOME)/src/mayhem-v240/firmware
+CXX     ?= g++
+STAGE    = build/stage
+CXXFLAGS = -std=c++17 -O2 -Wall -Wno-unused-parameter \
+           -DLPC43XX_M4 -I$(STAGE) -I$(FW)/common
+
+SRC   = proc_meshtastic_lf.cpp proc_meshtastic_lf.hpp lora_decode.cpp lora_decode.hpp
+STAGED = $(addprefix $(STAGE)/,$(SRC))
+OBJS  = build/proc_meshtastic_lf.o build/lora_decode.o build/lf_main.o
+
+all: hostsim
+
+$(STAGE):
+	@mkdir -p $(STAGE)
+
+# Always re-copy: the firmware tree is the source of truth.
+.PHONY: stage
+stage: | $(STAGE)
+	@cp -f $(addprefix $(FW)/baseband/,$(SRC)) $(STAGE)/
+	@cp -f shim/*.hpp shim/*.h $(STAGE)/
+
+build/proc_meshtastic_lf.o: stage
+	$(CXX) $(CXXFLAGS) -Dmain=portapack_baseband_main \
+	  -c $(STAGE)/proc_meshtastic_lf.cpp -o $@
+
+build/lora_decode.o: stage
+	$(CXX) $(CXXFLAGS) -c $(STAGE)/lora_decode.cpp -o $@
+
+build/lf_main.o: lf_main.cpp stage
+	$(CXX) $(CXXFLAGS) -c lf_main.cpp -o $@
+
+hostsim: $(OBJS)
+	$(CXX) $(OBJS) -o $@
+
+clean:
+	rm -rf build hostsim
+
+.PHONY: all clean

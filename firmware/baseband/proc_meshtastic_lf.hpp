@@ -91,6 +91,23 @@ class MeshtasticLFProcessor : public BasebandProcessor {
 
     uint64_t sample_index{0};
 
+#ifdef LF_BATCH
+    /* Timing-recovery batch decode. The streaming pass loses ~1 marginal symbol
+     * per burst to a fractional windowing/timing tie; buffering the burst's raw
+     * samples lets decode() re-window and search the decimation shift + a
+     * fractional-CFO grid the way the host reference does, then CRC-gate. This
+     * buffer is large (host/hostsim only) -- the device build leaves LF_BATCH
+     * off and ships the streaming best-effort decoder. */
+    static constexpr size_t raw_cap = 1u << 20;   /* ring of raw IQ samples */
+    std::complex<float> rawbuf[raw_cap]{};
+    uint64_t raw_head{0};       /* absolute count of samples written */
+    uint64_t lock_raw{0};       /* raw_head at preamble lock */
+    bool batch_pending{false};
+    bool batch_decode();
+    float batch_cfo(uint64_t seg0, size_t nsym);
+    uint16_t batch_bin(uint64_t sym0, float cfo);
+#endif
+
     ACARSPacketMessage message{};
 
     BasebandThread baseband_thread{baseband_fs, this, baseband::Direction::Receive};

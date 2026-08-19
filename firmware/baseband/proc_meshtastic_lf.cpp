@@ -85,6 +85,9 @@ void MeshtasticLFProcessor::on_lock(size_t p) {
         downchirp_corr[p][k] =
             downchirp[k] * std::complex<float>(cosf(ph), sinf(ph));
     }
+#ifdef LF_BATCH
+    if (p == 0) lock_raw = raw_head;
+#endif
     state[p] = State::Capture;
     sym_count[p] = 0;
 }
@@ -228,8 +231,14 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
         sym_count[p]++;
     }
     if (sym_count[p] >= cap_after_lock) {
+#ifdef LF_BATCH
+        bool hit = false;
+        if (p == 0) hit = batch_decode();
+        if (hit) reset_all(); else reset(p);
+#else
         const bool hit = decode(p);
         if (hit) reset_all(); else reset(p);
+#endif
     }
 }
 
@@ -245,6 +254,10 @@ void MeshtasticLFProcessor::execute(const buffer_c8_t& buffer) {
     for (size_t i = 0; i < buffer.count; i++) {
         const std::complex<float> s(static_cast<float>(buffer.p[i].real()),
                                     static_cast<float>(buffer.p[i].imag()));
+#ifdef LF_BATCH
+        rawbuf[raw_head & (raw_cap - 1)] = s;
+        raw_head++;
+#endif
         for (size_t p = 0; p < nphase; p++) {
             if (sample_index < p) continue;
             decim_acc[p] += s;
@@ -261,6 +274,134 @@ void MeshtasticLFProcessor::emit(uint8_t kind, const uint8_t* data, uint8_t len)
     for (uint8_t i = 0; i < len; i++) message.message[i] = static_cast<char>(data[i]);
     shared_memory.application_queue.push(message);
 }
+
+
+#ifdef LF_BATCH
+/* One dechirped-FFT peak of the symbol whose first raw sample is sym0. Decimate
+ * `decim` raw samples per point into a 2048 window, de-rotate by the trial CFO,
+ * dechirp, FFT, argmax. */
+uint16_t MeshtasticLFProcessor::batch_bin(uint64_t sym0, float cfo) {
+    for (size_t k = 0; k < fft_n; k++) {
+        std::complex<float> acc{0.0f, 0.0f};
+        const uint64_t g = sym0 + static_cast<uint64_t>(k) * decim;
+        for (size_t t = 0; t < decim; t++)
+            acc += rawbuf[(g + t) & (raw_cap - 1)];
+        const float ph = -2.0f * 3.14159265358979f * cfo *
+                         static_cast<float>(k) / static_cast<float>(fft_n);
+        dechirped[k] = acc * std::complex<float>(cosf(ph), sinf(ph)) * downchirp[k];
+    }
+    fft_swap(dechirped, scratch);
+    fft_c_preswapped(scratch, 0, fft_k);
+    float best = 0.0f; uint32_t bb = 0;
+    for (size_t k = 0; k < fft_n; k++) {
+        const float m = scratch[k].real() * scratch[k].real() +
+                        scratch[k].imag() * scratch[k].imag();
+        if (m > best) { best = m; bb = static_cast<uint32_t>(k); }
+    }
+    return static_cast<uint16_t>(bb);
+}
+
+/* Fractional CFO from the averaged preamble spectrum (parabola on linear |FFT|),
+ * mirroring the host reference. seg0 = raw index of the first frame's sample. */
+float MeshtasticLFProcessor::batch_cfo(uint64_t seg0, size_t nsym) {
+    const size_t use = nsym < 12 ? nsym : 12;
+    if (use < 4) return 0.0f;
+    static float mag[fft_n];
+    for (size_t k = 0; k < fft_n; k++) mag[k] = 0.0f;
+    for (size_t j = 0; j < use; j++) {
+        const uint64_t sym0 = seg0 + static_cast<uint64_t>(j) * fft_n * decim;
+        for (size_t k = 0; k < fft_n; k++) {
+            std::complex<float> acc{0.0f, 0.0f};
+            const uint64_t g = sym0 + static_cast<uint64_t>(k) * decim;
+            for (size_t t = 0; t < decim; t++) acc += rawbuf[(g + t) & (raw_cap - 1)];
+            dechirped[k] = acc * downchirp[k];
+        }
+        fft_swap(dechirped, scratch);
+        fft_c_preswapped(scratch, 0, fft_k);
+        for (size_t k = 0; k < fft_n; k++)
+            mag[k] += sqrtf(scratch[k].real() * scratch[k].real() +
+                            scratch[k].imag() * scratch[k].imag());
+    }
+    uint32_t b = 0; float bm = 0.0f;
+    for (size_t k = 0; k < fft_n; k++) if (mag[k] > bm) { bm = mag[k]; b = static_cast<uint32_t>(k); }
+    const float a0 = mag[(b + fft_n - 1) % fft_n], a1 = mag[b], a2 = mag[(b + 1) % fft_n];
+    const float den = a0 - 2.0f * a1 + a2;
+    float d = (fabsf(den) > 1e-9f) ? (0.5f * (a0 - a2) / den) : 0.0f;
+    if (d > 0.5f) d = 0.5f; if (d < -0.5f) d = -0.5f;
+    return d;
+}
+
+bool MeshtasticLFProcessor::batch_decode() {
+    static uint8_t out[64];
+    static uint8_t best[64]; uint8_t best_len = 0;
+    static uint16_t bins[128];
+    static const int adj[3] = {-1, 0, 1};
+
+    /* Re-window the burst from ~16 symbols before lock (covers the whole
+     * preamble for CFO + a generous header-offset search). */
+    const uint64_t PRE = static_cast<uint64_t>(fft_n) * decim * 16;
+    if (lock_raw < PRE + decim) return false;
+    const uint64_t region0 = lock_raw - PRE;
+    const size_t nsym = (fft_n * 18 < 96) ? 96 : 96;   /* cap the frames we scan */
+
+    for (size_t shift = 0; shift < decim; shift++) {
+        const uint64_t seg0 = region0 + shift;
+        /* how many whole symbols fit before we reach raw_head */
+        const size_t avail = static_cast<size_t>((raw_head - seg0) / (fft_n * decim));
+        const size_t ns = avail < nsym ? avail : nsym;
+        if (ns < 24) continue;
+        const float cfo0 = batch_cfo(seg0, ns);
+        /* Frame-boundary (symbol-timing) sweep: our capture start is offset
+         * from the true symbol boundary by an unknown number of decimated
+         * samples. Normalisation hides that as a bin shift for clean symbols
+         * but leaves ISI that flips a marginal one; the right boundary lands
+         * every symbol and passes CRC. */
+        for (int toff = 0; toff < static_cast<int>(fft_n); toff += 16) {
+        const uint64_t tseg0 = seg0 + static_cast<uint64_t>(toff) * decim;
+        for (int ci = -4; ci <= 4; ci++) {
+            const float cfo = cfo0 + static_cast<float>(ci) * 0.08f;
+            for (size_t j = 0; j < ns && j < 100; j++)
+                bins[j] = batch_bin(tseg0 + static_cast<uint64_t>(j) * fft_n * decim, cfo);
+            /* preamble bin = mode of the first 12 */
+            uint16_t pre = bins[6];
+            {
+                int bc = 0;
+                for (size_t a = 0; a < 12 && a < ns; a++) {
+                    int c = 0;
+                    for (size_t b = 0; b < 12 && b < ns; b++)
+                        if (bins[b] == bins[a]) c++;
+                    if (c > bc) { bc = c; pre = bins[a]; }
+                }
+            }
+            for (uint32_t rot = 0; rot <= fft_n / 4; rot += fft_n / 4) {
+                for (size_t hstart = 3; hstart + 8 <= ns && hstart < 30; hstart++) {
+                    for (int hi = 0; hi < 3; hi++) {
+                        lora::Header hdr;
+                        const size_t plen0 = decode_full(bins, ns, pre, hstart,
+                            rot, adj[hi], -1, out, sizeof(out), &hdr);
+                        if (plen0 < 12) continue;
+                        if (best_len == 0) {
+                            best_len = static_cast<uint8_t>(plen0);
+                            for (size_t z = 0; z < plen0 + 2u; z++) best[z] = out[z];
+                        }
+                        for (int pi = 0; pi < 3; pi++) {
+                            const size_t plen = decode_full(bins, ns, pre, hstart,
+                                rot, adj[hi], adj[pi], out, sizeof(out), nullptr);
+                            if (plen >= 12 && lora::crc16_ok(out, plen)) {
+                                emit(2, out, static_cast<uint8_t>(plen));
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        }
+    }
+    if (best_len >= 12) emit(6, best, best_len);
+    return false;
+}
+#endif
 
 int main() {
     EventDispatcher event_dispatcher{std::make_unique<MeshtasticLFProcessor>()};
