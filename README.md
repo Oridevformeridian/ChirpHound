@@ -5,6 +5,10 @@ the PortaPack Mayhem — the first working CSS demodulator to run on this hardwa
 It locks LoRa preambles, decodes frames, logs everything to SD or over USB serial,
 and shows a static detector panel (preambles / headers / decodes / addresses).
 
+![ChirpHound detector screen](docs/detector.png)
+
+*The detector panel on a PortaPack: preamble/header/decode/address counts update in place. Left: an earlier build decoding a live beacon (`!4358AB2C > bcast`).*
+
 Two halves:
 - **Firmware** — `meshtastic_rx` external app + M4 baseband (in the `meshtastic-rx`
   branch of `mayhem-v240`). Drops onto the SD card, no reflash of the base firmware.
