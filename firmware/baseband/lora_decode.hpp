@@ -66,6 +66,10 @@ struct Header {
 };
 bool parse_header(const uint8_t* nibbles, Header* out);
 
+/* sx127x LoRa payload CRC-16. p holds payload_len+2 bytes (payload then the 2
+ * CRC bytes); returns true if the CRC over the payload matches. */
+bool crc16_ok(const uint8_t* p, size_t payload_len);
+
 }  // namespace lora
 
 #endif /*__LORA_DECODE_H__*/

@@ -1,0 +1,25 @@
+diff --git a/firmware/common/dsp_fft.hpp b/firmware/common/dsp_fft.hpp
+index 2fade868..960dd2f3 100644
+--- a/firmware/common/dsp_fft.hpp
++++ b/firmware/common/dsp_fft.hpp
+@@ -103,8 +103,8 @@ void fft_c_preswapped(std::array<T, N>& data, const size_t from, const size_t to
+     constexpr auto K = log_2(N);
+     if ((to > K) || (from > K)) return;
+ 
+-    constexpr size_t K_max = 8;
+-    static_assert(K <= K_max, "No FFT twiddle factors for K > 8");
++    constexpr size_t K_max = 11;
++    static_assert(K <= K_max, "No FFT twiddle factors for K > 11");
+     static constexpr std::array<std::complex<float>, K_max> wp_table{{
+         {-2.0f, 0.0f},                                             // 2
+         {-1.0f, -1.0f},                                            // 4
+@@ -114,6 +114,9 @@ void fft_c_preswapped(std::array<T, N>& data, const size_t from, const size_t to
+         {-0.0048152733278031137552f, -0.098017140329560601994f},   // 64
+         {-0.0012045437948276072852f, -0.049067674327418014255f},   // 128
+         {-0.00030118130379577988423f, -0.024541228522912288032f},  // 256
++        {-7.52981608554970094e-05f, -0.0122715382857199254f},      // 512
++        {-1.88247173988909111e-05f, -0.00613588464915447527f},     // 1024
++        {-4.70619042380882036e-06f, -0.00306795676296597614f},     // 2048
+     }};
+ 
+     /* Provide data to this function, pre-swapped. */

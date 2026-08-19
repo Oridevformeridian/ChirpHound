@@ -164,4 +164,21 @@ bool parse_header(const uint8_t* n, Header* out) {
     return true;
 }
 
+
+/* sx127x LoRa payload CRC-16: poly 0x1021 over the first (plen-2) payload
+ * bytes, then fold in the last two payload bytes; the result is the two CRC
+ * bytes appended after the payload. p must hold plen+2 bytes. */
+bool crc16_ok(const uint8_t* p, size_t plen) {
+    if (plen < 2) return false;
+    uint16_t c = 0;
+    for (size_t i = 0; i + 2 < plen; i++) {
+        c ^= static_cast<uint16_t>(p[i]) << 8;
+        for (int b = 0; b < 8; b++)
+            c = (c & 0x8000) ? static_cast<uint16_t>((c << 1) ^ 0x1021)
+                             : static_cast<uint16_t>(c << 1);
+    }
+    c ^= static_cast<uint16_t>(p[plen - 1]) | (static_cast<uint16_t>(p[plen - 2]) << 8);
+    return (p[plen] == (c & 0xFF)) && (p[plen + 1] == ((c >> 8) & 0xFF));
+}
+
 }  // namespace lora

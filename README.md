@@ -76,3 +76,16 @@ wedge the CDC — do not use `fwb`).
 
 - [`docs/WIRING.md`](docs/WIRING.md) — how the app + baseband wire into Mayhem, and the signal flow.
 - [`examples/`](examples/) — real field captures (stationary + walkabout) you can score with the host tools.
+
+## LongFast (the DEFAULT preset)
+
+SHORT_TURBO is where ChirpHound started; **LongFast** (SF11/BW250) is where it
+matters — Meshtastic's DEFAULT, the preset real public traffic runs on. SF11's
+~12 dB extra processing gain is exactly what the PortaPack front end needs, and
+LongFast preambles lock rock-solid. The SF11 receiver
+(`firmware/baseband/proc_meshtastic_lf.*`, plus a 3-row `dsp_fft` twiddle-table
+extension for the 2048-point FFT) reproduces the validated host decoder
+byte-for-byte on all but ~1 marginal symbol per burst — a great detector and a
+best-effort decoder, far closer to clean than SF7. Full write-up:
+[docs/LONGFAST.md](docs/LONGFAST.md). Host reference decoder:
+[host/longfast_decode.py](host/longfast_decode.py).
