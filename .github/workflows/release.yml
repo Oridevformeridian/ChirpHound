@@ -50,33 +50,41 @@ jobs:
       - name: Extract and verify the .ppma
         run: |
           cp mayhem/build/firmware/application/meshtastic_rx.ppma .
+          cp mayhem/build/firmware/application/meshtastic_lf_rx.ppma .
           python3 - "$APP_VERSION" <<'PY'
           import struct, sys
           want = int(sys.argv[1], 16)
-          d = open("meshtastic_rx.ppma", "rb").read()
-          got = struct.unpack_from("<I", d, 12)[0]
-          # full baseband embedded?
-          b = open("mayhem/build/firmware/baseband/PMSH.bin", "rb").read()
-          assert b in d, "baseband image not embedded in .ppma"
-          assert got == want, f"app_version {got:#010x} != {want:#010x}"
-          print(f"OK: {len(d)} B, app_version {got:#010x}, baseband embedded")
+          for ppma, tag in [("meshtastic_rx.ppma", "PMSH"),
+                            ("meshtastic_lf_rx.ppma", "PMLF")]:
+              d = open(ppma, "rb").read()
+              got = struct.unpack_from("<I", d, 12)[0]
+              b = open(f"mayhem/build/firmware/baseband/{tag}.bin", "rb").read()
+              assert b in d, f"{tag} baseband not embedded in {ppma}"
+              assert got == want, f"{ppma} app_version {got:#010x} != {want:#010x}"
+              print(f"OK: {ppma} {len(d)} B, app_version {got:#010x}, {tag} embedded")
           PY
 
       - name: Publish Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: meshtastic_rx.ppma
+          files: |
+            meshtastic_rx.ppma
+            meshtastic_lf_rx.ppma
           body: |
-            **ChirpHound** — Meshtastic (SF7/BW500 SHORT_TURBO) receiver + detector for PortaPack Mayhem.
+            **ChirpHound** — Meshtastic receiver + detector for PortaPack Mayhem.
+            Two apps: `meshtastic_rx.ppma` (SF7/BW500 SHORT_TURBO) and
+            `meshtastic_lf_rx.ppma` (SF11/BW250 **LongFast**, the DEFAULT preset).
 
             Built against Mayhem firmware **${{ env.VERSION_STRING }}** (`app_version ${{ env.APP_VERSION }}`).
-            Copy `meshtastic_rx.ppma` to `/APPS` on the SD card. It only loads on a device
+            Copy the `.ppma`(s) to `/APPS` on the SD card. They only load on a device
             running Mayhem ${{ env.VERSION_STRING }}; on another version, rebuild with a matching pin.
 
       - name: Upload build artifact (non-tag runs)
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
-          name: meshtastic_rx-ppma
-          path: meshtastic_rx.ppma
+          name: chirphound-ppma
+          path: |
+            meshtastic_rx.ppma
+            meshtastic_lf_rx.ppma
