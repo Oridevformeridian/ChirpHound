@@ -20,6 +20,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # let GITHUB_TOKEN create the Release
     steps:
       - name: Checkout ChirpHound
         uses: actions/checkout@v4
