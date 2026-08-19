@@ -11,11 +11,12 @@ MeshtasticLFProcessor::MeshtasticLFProcessor() {
     for (size_t k = 0; k < fft_n; k++) {
         const float phase = 3.14159265358979f * static_cast<float>(k * k) /
                             static_cast<float>(fft_n);
-        downchirp[k] = std::complex<float>(cosf(-phase), sinf(-phase));
+        dc_re_[k] = static_cast<int8_t>(lrintf(127.0f * cosf(-phase)));
+        dc_im_[k] = static_cast<int8_t>(lrintf(127.0f * sinf(-phase)));
     }
     for (size_t p = 0; p < nphase; p++) {
 #ifndef LF_CAND
-        downchirp_corr[p] = downchirp;
+        for (size_t k = 0; k < fft_n; k++) downchirp_corr[p][k] = down(k);
 #endif
         reset(p);
     }
@@ -88,7 +89,7 @@ void MeshtasticLFProcessor::on_lock(size_t p) {
         const float ph = -2.0f * 3.14159265358979f * delta *
                          static_cast<float>(k) / static_cast<float>(fft_n);
         downchirp_corr[p][k] =
-            downchirp[k] * std::complex<float>(cosf(ph), sinf(ph));
+            down(k) * std::complex<float>(cosf(ph), sinf(ph));
     }
 #endif
 #ifdef LF_BATCH
@@ -204,12 +205,15 @@ bool MeshtasticLFProcessor::decode(size_t p) {
 
 void MeshtasticLFProcessor::process_symbol(size_t p) {
 #ifdef LF_CAND
-    const std::array<std::complex<float>, fft_n>& dc = downchirp;
 #else
-    const std::array<std::complex<float>, fft_n>& dc =
-        (state[p] == State::Search) ? downchirp : downchirp_corr[p];
 #endif
-    for (size_t k = 0; k < fft_n; k++) dechirped[k] = window[p][k] * dc[k];
+#ifdef LF_CAND
+    for (size_t k = 0; k < fft_n; k++) dechirped[k] = win(p, k) * down(k);
+#else
+    for (size_t k = 0; k < fft_n; k++)
+        dechirped[k] = win(p, k) *
+            ((state[p] == State::Search) ? down(k) : downchirp_corr[p][k]);
+#endif
     float sharp = 0.0f;
     int8_t frac = 0;
     const uint32_t bin = peak_bin(dechirped, &sharp, &frac);
@@ -249,7 +253,7 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
          * pre_bin (down) and sfd_bin (up) give STO = (pre - sfd)/2, which is
          * CFO-invariant, so toff = const - STO tracks any transmitter's CFO. */
         for (size_t k = 0; k < fft_n; k++)
-            dechirped[k] = window[0][k] * std::conj(downchirp[k]);
+            dechirped[k] = win(0, k) * std::conj(down(k));
         fft_swap(dechirped, scratch); fft_c_preswapped(scratch, 0, fft_k);
         float ub = 0.0f, ut = 0.0f; uint32_t ubin = 0;
         for (size_t k = 0; k < fft_n; k++) {
@@ -277,8 +281,8 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
     if (p == 0) {
         if (!cand_have_prev) {
             for (size_t k = 0; k < fft_n; k++) {
-                ring_re[k] = static_cast<int16_t>(window[0][k].real());
-                ring_im[k] = static_cast<int16_t>(window[0][k].imag());
+                ring_re[k] = win_re_[0][k];
+                ring_im[k] = win_im_[0][k];
             }
             cand_have_prev = true;
             return;
@@ -291,8 +295,8 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
             for (size_t k = 0; k < fft_n; k++) {
                 const std::complex<float> sv = (tf + k < fft_n)
                     ? std::complex<float>(ring_re[tf + k], ring_im[tf + k])
-                    : window[0][tf + k - fft_n];
-                dechirped[k] = sv * downchirp[k] * ramp;
+                    : win(0, tf + k - fft_n);
+                dechirped[k] = sv * down(k) * ramp;
                 ramp *= w;
             }
             fft_swap(dechirped, scratch);
@@ -306,8 +310,8 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
             if (slot < max_symbols) cand_bins[c][slot] = static_cast<uint16_t>(bb);
         }
         for (size_t k = 0; k < fft_n; k++) {
-            ring_re[k] = static_cast<int16_t>(window[0][k].real());
-            ring_im[k] = static_cast<int16_t>(window[0][k].imag());
+            ring_re[k] = win_re_[0][k];
+            ring_im[k] = win_im_[0][k];
         }
         if (slot < max_symbols) sym_count[0]++;
         if (sym_count[0] >= cap_after_lock) {
@@ -337,7 +341,8 @@ void MeshtasticLFProcessor::process_symbol(size_t p) {
 void MeshtasticLFProcessor::feed(size_t p) {
     if (++decim_cnt[p] < decim) return;
     decim_cnt[p] = 0;
-    window[p][window_fill[p]] = decim_acc[p];
+    win_re_[p][window_fill[p]] = static_cast<int16_t>(lrintf(decim_acc[p].real()));
+    win_im_[p][window_fill[p]] = static_cast<int16_t>(lrintf(decim_acc[p].imag()));
     decim_acc[p] = {0.0f, 0.0f};
     if (++window_fill[p] >= fft_n) { window_fill[p] = 0; process_symbol(p); }
 }
@@ -380,7 +385,7 @@ uint16_t MeshtasticLFProcessor::batch_bin(uint64_t sym0, float cfo) {
             acc += rawbuf[(g + t) & (raw_cap - 1)];
         const float ph = -2.0f * 3.14159265358979f * cfo *
                          static_cast<float>(k) / static_cast<float>(fft_n);
-        dechirped[k] = acc * std::complex<float>(cosf(ph), sinf(ph)) * downchirp[k];
+        dechirped[k] = acc * std::complex<float>(cosf(ph), sinf(ph)) * down(k);
     }
     fft_swap(dechirped, scratch);
     fft_c_preswapped(scratch, 0, fft_k);
@@ -406,7 +411,7 @@ float MeshtasticLFProcessor::batch_cfo(uint64_t seg0, size_t nsym) {
             std::complex<float> acc{0.0f, 0.0f};
             const uint64_t g = sym0 + static_cast<uint64_t>(k) * decim;
             for (size_t t = 0; t < decim; t++) acc += rawbuf[(g + t) & (raw_cap - 1)];
-            dechirped[k] = acc * downchirp[k];
+            dechirped[k] = acc * down(k);
         }
         fft_swap(dechirped, scratch);
         fft_c_preswapped(scratch, 0, fft_k);

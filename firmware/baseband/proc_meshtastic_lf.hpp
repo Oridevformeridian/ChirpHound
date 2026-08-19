@@ -87,13 +87,25 @@ class MeshtasticLFProcessor : public BasebandProcessor {
     void emit(uint8_t kind, const uint8_t* data, uint8_t len);
 
     /* phase-independent reference downchirp */
-    std::array<std::complex<float>, fft_n> downchirp{};
+    /* Unit-magnitude reference chirp stored int8 (Q7) to fit the M4 heap:
+     * the framework also make_unique's a 16 KB DMA buffer from the same heap,
+     * so the processor must stay well under it. down(k) rebuilds the float. */
+    int8_t dc_re_[fft_n]{};
+    int8_t dc_im_[fft_n]{};
+    std::complex<float> down(size_t k) const {
+        return std::complex<float>(dc_re_[k] * (1.0f / 127.0f),
+                                   dc_im_[k] * (1.0f / 127.0f));
+    }
     /* scratch reused across phases (single-threaded execute) */
     std::array<std::complex<float>, fft_n> dechirped{};
     std::array<std::complex<float>, fft_n> scratch{};
 
     /* per decimation phase */
-    std::array<std::complex<float>, fft_n> window[nphase]{};
+    int16_t win_re_[nphase][fft_n]{};
+    int16_t win_im_[nphase][fft_n]{};
+    std::complex<float> win(size_t p, size_t k) const {
+        return std::complex<float>(win_re_[p][k], win_im_[p][k]);
+    }
 #ifndef LF_CAND
     std::array<std::complex<float>, fft_n> downchirp_corr[nphase]{};
     std::array<float, fft_n> pre_mag[nphase]{};
