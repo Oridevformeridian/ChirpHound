@@ -71,3 +71,8 @@ SNR — an RF/front-end property, now mitigated by the amp-off config.
 dead-end hypotheses (`symbol_decay`, `drift`, `dual_corr`, `snr_curve`, ...).
 Reads go over serial; flashing a new build still needs the card (serial writes
 wedge the CDC — do not use `fwb`).
+
+## More
+
+- [`docs/WIRING.md`](docs/WIRING.md) — how the app + baseband wire into Mayhem, and the signal flow.
+- [`examples/`](examples/) — real field captures (stationary + walkabout) you can score with the host tools.
