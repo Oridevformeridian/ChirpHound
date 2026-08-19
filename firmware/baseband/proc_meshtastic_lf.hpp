@@ -169,8 +169,14 @@ class MeshtasticLFProcessor : public BasebandProcessor {
 
     ACARSPacketMessage message{};
 
-    BasebandThread baseband_thread{baseband_fs, this, baseband::Direction::Receive};
-    RSSIThread rssi_thread{};
+    /* auto_start=false: the LF constructor builds a 2048-point chirp table (~ms
+     * of work); with the default auto_start the baseband thread would begin
+     * calling execute() on this half-built object, racing the constructor. That
+     * faults the M4 before it can signal baseband_ready -> "Baseband Sync Fail".
+     * Started explicitly at the end of the constructor instead. */
+    BasebandThread baseband_thread{baseband_fs, this, baseband::Direction::Receive,
+                                   /*auto_start*/ false};
+    RSSIThread rssi_thread{/*auto_start*/ false};
 };
 
 #endif

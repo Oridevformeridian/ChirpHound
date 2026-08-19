@@ -20,6 +20,10 @@ MeshtasticLFProcessor::MeshtasticLFProcessor() {
 #endif
         reset(p);
     }
+    /* Object fully built -- now it is safe for the baseband thread to call
+     * execute(). (No-op in hostsim, which drives execute() directly.) */
+    baseband_thread.start();
+    rssi_thread.start();
 }
 
 void MeshtasticLFProcessor::reset(size_t p) {
